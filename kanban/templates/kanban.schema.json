@@ -1,0 +1,355 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/kirin/claude-workbench/schema/kanban.schema.json",
+  "title": "Kanban",
+  "description": "Schema for kanban.json — the single source of truth for the claude-workbench kanban plugin.",
+  "type": "object",
+  "required": ["meta", "tasks"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "v0.2+ semantic version. Writers always emit this; readers accept either this or schema_version."
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Legacy v0.1 version field. Readers still accept it; new writes use 'version' instead."
+    },
+    "backend": {
+      "type": "object",
+      "description": "Driver selection. Absent ⇒ implicit local mode (v0.1 backwards-compat).",
+      "required": ["driver"],
+      "additionalProperties": false,
+      "properties": {
+        "driver": {
+          "type": "string",
+          "enum": ["local", "jira"]
+        },
+        "jira": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "boardUrl": { "type": "string", "format": "uri" },
+            "boardId": { "type": "integer", "minimum": 1 },
+            "projectKey": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+            "agentAccountId": { "type": "string" },
+            "_meta": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Push/pull metadata for the kanban-config Jira project property (#57). Managed by /kanban:push-board-config and /kanban:pull-board-config — users shouldn't hand-edit. `version` is a monotonic counter incremented on each push; `hash` is the canonical sha256 of the on-Jira config with `_meta` itself stripped, used as the optimistic-concurrency fence for `push --if-match`.",
+              "properties": {
+                "version": { "type": "integer", "minimum": 1 },
+                "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                "pushedAt": { "type": "string", "format": "date-time" },
+                "pushedByAccountId": { "type": "string" }
+              }
+            },
+            "transitions": {
+              "type": "object",
+              "description": "Canonical column -> compound transition spec. Each canonical column maps to a Jira status plus optional label add/remove and assignee. Multiple canonicals may share the same Jira status; reader disambiguates by labels (most-specific match wins).",
+              "additionalProperties": false,
+              "properties": {
+                "TODO":      { "$ref": "#/definitions/transitionSpec" },
+                "DOING":     { "$ref": "#/definitions/transitionSpec" },
+                "BLOCKED":   { "$ref": "#/definitions/transitionSpec" },
+                "REVIEW":    { "$ref": "#/definitions/transitionSpec" },
+                "APPROVED":  { "$ref": "#/definitions/transitionSpec" },
+                "DONE":      {
+                  "$ref": "#/definitions/transitionSpec",
+                  "description": "DEPRECATED — renamed to APPROVED in 0.3.23 (#48). Reader auto-migrates DONE → APPROVED on load; new writes use APPROVED. Slot kept for back-compat parsing."
+                },
+                "CANCELLED": { "$ref": "#/definitions/transitionSpec" }
+              }
+            },
+            "statusMap": {
+              "type": "object",
+              "description": "Deprecated since 0.3.0 — use `transitions`. Readers still accept legacy v0.2.x files and auto-migrate on load.",
+              "additionalProperties": { "type": "string" }
+            },
+            "partial": {
+              "type": "boolean",
+              "description": "Deprecated since 0.3.0 — see `transitions`."
+            },
+            "labelFallback": {
+              "type": "object",
+              "description": "Deprecated since 0.3.0 — use `transitions[*].addLabels`.",
+              "additionalProperties": { "type": "string" }
+            },
+            "ap": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "fieldId": { "type": "string", "pattern": "^customfield_[0-9]+$" },
+                "fieldName": { "type": "string" },
+                "registered": {
+                  "type": "array",
+                  "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,40}$" },
+                  "uniqueItems": true
+                }
+              }
+            },
+            "labels": {
+              "type": "object",
+              "description": "Optional team-defined label rules. Currently only `allowed` is consumed (by /kanban:label --add). Absence means no allowlist — all labels accepted.",
+              "additionalProperties": false,
+              "properties": {
+                "allowed": {
+                  "type": "array",
+                  "description": "If set and non-empty, /kanban:label --add rejects labels not in this list. Removal is never gated.",
+                  "items": { "type": "string" },
+                  "uniqueItems": true
+                }
+              }
+            },
+            "conventions": {
+              "type": "object",
+              "description": "Soft team agreements — narrative notes that travel with the board mapping (kanban-jira-code/2 schema). Length guardrails are advisory; helpers warn but don't reject.",
+              "additionalProperties": false,
+              "properties": {
+                "notes": {
+                  "type": "array",
+                  "description": "Short prose notes the team agrees on. Receivers acknowledge them after /kanban:pull-board-config (or the passive-sync trigger inside /kanban:sync) lands new content; ack hash gates further work until the user confirms they've read the rules.",
+                  "items": { "type": "string" }
+                },
+                "blockedRequiresLink": {
+                  "type": "boolean",
+                  "description": "If true, /kanban:block refuses transitions to BLOCKED that don't pass --blocked-by. Per-team opt-in convention."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "required": ["priorities", "columns", "created_at", "updated_at"],
+      "additionalProperties": false,
+      "properties": {
+        "priorities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Priority enum, ordered highest → lowest (e.g. [P0, P1, P2, P3])."
+        },
+        "categories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "User-defined categories."
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["TODO", "DOING", "APPROVED", "DONE", "BLOCKED", "REVIEW", "CANCELLED"]
+          },
+          "minItems": 4,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "description": "Columns. Local mode uses the 4 canonical [TODO, DOING, APPROVED, BLOCKED]; Jira mode may add REVIEW and CANCELLED. Driver-side runtime enforces its own subset. The legacy `DONE` token (renamed in 0.3.23, #48) is kept in the enum for back-compat parsing — readers auto-migrate to APPROVED on load."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/task" }
+    }
+  },
+  "definitions": {
+    "transitionSpec": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Jira status display name to transition to."
+        },
+        "addLabels": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Labels to add when transitioning to this canonical column."
+        },
+        "removeLabels": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Labels to remove when transitioning to this canonical column."
+        },
+        "assignee": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["accountId"],
+          "properties": {
+            "accountId": { "type": "string", "minLength": 1 }
+          }
+        },
+        "flavors": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "Sub-classification of this canonical state via labels (#45). Each flavor adds its own addLabels/removeLabels/assignee on top of the parent spec, atomically. The parent's `status` is shared. Use when a single canonical lifecycle stage carries multiple semantic flavors that an outside observer should be able to triage at a glance (e.g. REVIEW awaiting_approval vs needs_decision). Naming: prefer underscore-separated values (kanban_awaiting_approval) over colon (kanban:foo) — the latter visually parses as a slash-command path.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "addLabels": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "removeLabels": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "assignee": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["accountId"],
+                "properties": {
+                  "accountId": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        "defaultFlavor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional fallback flavor name used when transition is invoked without --flavor. Must be a key in `flavors`. When unset and `flavors` exists, transition without --flavor raises."
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "title", "column", "priority", "created", "updated"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^task-[0-9]{3,}$",
+          "description": "Format: task-NNN (≥3 digits)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "column": {
+          "type": "string",
+          "enum": ["TODO", "DOING", "APPROVED", "DONE", "BLOCKED", "REVIEW", "CANCELLED"]
+        },
+        "priority": {
+          "type": "string"
+        },
+        "category": {
+          "type": ["string", "null"]
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "depends": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^task-[0-9]{3,}$"
+          }
+        },
+        "created": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "started": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "completed": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "assignee": {
+          "type": ["string", "null"]
+        },
+        "description": {
+          "type": "string"
+        },
+        "comments": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/comment" }
+        },
+        "custom": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "blocked_reason": {
+              "type": ["string", "null"],
+              "description": "Required non-empty when column == BLOCKED."
+            },
+            "needs_user_input": {
+              "type": "boolean",
+              "description": "Flag for the notify plugin: when true, user attention is needed for this task."
+            },
+            "estimated_hours": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "column": { "const": "DOING" } } },
+          "then": { "required": ["started"], "properties": { "started": { "type": "string" } } }
+        },
+        {
+          "if": { "properties": { "column": { "const": "APPROVED" } } },
+          "then": { "required": ["started", "completed"], "properties": { "started": { "type": "string" }, "completed": { "type": "string" } } }
+        },
+        {
+          "if": { "properties": { "column": { "const": "DONE" } } },
+          "then": { "required": ["started", "completed"], "properties": { "started": { "type": "string" }, "completed": { "type": "string" } }, "description": "DONE is the deprecated alias for APPROVED (#48). Kept here so back-compat data files still validate." }
+        },
+        {
+          "if": { "properties": { "column": { "const": "BLOCKED" } } },
+          "then": {
+            "properties": {
+              "custom": {
+                "type": "object",
+                "required": ["blocked_reason"],
+                "properties": {
+                  "blocked_reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "required": ["custom"]
+          }
+        }
+      ]
+    },
+    "comment": {
+      "type": "object",
+      "required": ["author", "ts", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "author": { "type": "string" },
+        "ts": { "type": "string", "format": "date-time" },
+        "text": { "type": "string" }
+      }
+    }
+  }
+}
